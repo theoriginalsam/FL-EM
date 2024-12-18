@@ -155,7 +155,6 @@ class FLClient:
         except Exception as e:
             self.logger.error(f"Error calculating metrics: {str(e)}")
             raise
-
     def update(self):
         """Perform one round of federated learning"""
         try:
@@ -167,10 +166,17 @@ class FLClient:
                 raise RequestException(f"Server returned status code: {response.status_code}")
             
             response_data = response.json()
-            if response_data.get('training_completed', False):
-                return True, {"message": "Training completed", "training_completed": True}
             
-            # Update local model weights
+            # Strict check for training completion
+            if (response_data.get('status') == 'completed' or 
+                response_data.get('training_completed', False)):
+                self.logger.info("Training completed signal received from server")
+                self.save_history()  # Save history before exiting
+                # Exit the program completely
+                self.logger.info("Shutting down client...")
+                os._exit(0)  # Force exit to prevent any further execution
+            
+            # Continue with normal update process only if training is not completed
             global_weights = response_data['weights']
             self.model.set_weights([np.array(w) for w in global_weights])
             
@@ -200,16 +206,16 @@ class FLClient:
                 raise RequestException(f"Failed to send update: {response.status_code}")
             
             response_data = response.json()
-            if response_data.get('status') == 'success':
-                if response_data.get('updated', False):
-                    self.logger.info("Global model updated successfully")
-                else:
-                    self.logger.info(
-                        f"Waiting for other clients "
-                        f"({response_data.get('current_clients', 0)}/"
-                        f"{response_data.get('required_clients', 0)})"
-                    )
             
+            # Check for training completion in update response
+            if (response_data.get('status') == 'completed' or 
+                response_data.get('training_completed', False)):
+                self.logger.info("Training completed signal received in update response")
+                self.save_history()  # Save history before exiting
+                # Exit the program completely
+                self.logger.info("Shutting down client...")
+                os._exit(0)  # Force exit to prevent any further execution
+                
             return True, response_data
             
         except RequestException as e:
@@ -218,10 +224,6 @@ class FLClient:
         except Exception as e:
             self.logger.error(f"Unexpected error: {str(e)}")
             return False, str(e)
-
-    # Keep run() and save_history() methods the same...
-
-# Keep main execution the same...
 
     def run(self, total_rounds=None):
         """Run FL client for specified number of rounds"""
@@ -232,50 +234,34 @@ class FLClient:
         max_retries = 3
         current_round = 0
         
-        while current_round < total_rounds:
-            retries = 0
-            while retries < max_retries:
-                self.logger.info(f"\nStarting round {current_round + 1}/{total_rounds}")
-                success, result = self.update()
-                
-                if success:
-                    if isinstance(result, dict):
-                        if result.get('training_completed', False):
-                            self.logger.info("Training completed")
-                            self.save_history()
+        try:
+            while current_round < total_rounds:
+                retries = 0
+                while retries < max_retries:
+                    self.logger.info(f"\nStarting round {current_round + 1}/{total_rounds}")
+                    success, result = self.update()
+                    
+                    if not success:
+                        retries += 1
+                        if retries < max_retries:
+                            self.logger.warning(f"Retry {retries}/{max_retries} after {retry_delay} seconds")
+                            time.sleep(retry_delay)
+                        else:
+                            self.logger.error(f"Failed to complete round after {max_retries} attempts")
                             return
-                            
-                        if result.get('status') == 'success':
-                            if result.get('updated', False):
-                                current_round += 1
-                                if result.get('result'):
-                                    self.logger.info(f"Round {current_round} completed")
-                                    self.logger.info(
-                                        f"Metrics: {json.dumps(result['result'].get('metrics', {}), indent=2, cls=NumpyEncoder)}"
-                                    )
-                            else:
-                                self.logger.info(result.get('message', 'Waiting for other clients'))
-                                time.sleep(retry_delay)
-                                continue
-                                
-                    if current_round >= total_rounds:
-                        self.logger.info("Maximum rounds reached")
-                        self.save_history()
-                        return
-                    break
+                    else:
+                        current_round += 1
+                        break
                 
-                retries += 1
-                if retries < max_retries:
-                    self.logger.warning(f"Retry {retries}/{max_retries} after {retry_delay} seconds")
-                    time.sleep(retry_delay)
-                else:
-                    self.logger.error(f"Failed to complete round after {max_retries} attempts")
-                    return
-        
-        self.save_history()
-        
-        self.logger.info("Training complete!")
-    
+                if current_round >= total_rounds:
+                    self.logger.info("Maximum rounds reached")
+                    self.save_history()
+                    break
+                    
+        except Exception as e:
+            self.logger.error(f"Unexpected error in run: {str(e)}")
+        finally:
+            self.logger.info("Training complete!")
     def save_history(self, save_path='results/clients'):
         """Save training history"""
         try:

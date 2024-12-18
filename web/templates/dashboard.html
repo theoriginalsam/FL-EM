@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Federated Learning Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdn.tailwindcss.com" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-8">Federated Learning Status</h1>
+
+        <!-- Status Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h3 class="text-lg font-semibold mb-2">Current Round</h3>
+                <p id="currentRound" class="text-3xl font-bold text-blue-600">0</p>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h3 class="text-lg font-semibold mb-2">Active Clients</h3>
+                <p id="activeClients" class="text-3xl font-bold text-green-600">0</p>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h3 class="text-lg font-semibold mb-2">Training Status</h3>
+                <p id="trainingStatus" class="text-3xl font-bold text-purple-600">In Progress</p>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h3 class="text-lg font-semibold mb-2">Average IoU</h3>
+                <p id="averageIoU" class="text-3xl font-bold text-orange-600">0</p>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h3 class="text-lg font-semibold mb-4">Training Metrics</h3>
+                <canvas id="metricsChart"></canvas>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h3 class="text-lg font-semibold mb-4">Performance Metrics</h3>
+                <canvas id="performanceChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Performance Stats -->
+        <div class="bg-white p-6 rounded-lg shadow mb-8">
+            <h3 class="text-lg font-semibold mb-4">Performance Statistics</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="performanceStats">
+                <!-- Stats will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let metricsChart;
+        let performanceChart;
+
+        function updateDashboard() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    // Update status cards
+                    document.getElementById('currentRound').textContent = 
+                        `${data.current_round}/${data.total_rounds}`;
+                    document.getElementById('activeClients').textContent = 
+                        `${data.active_clients}/${data.required_clients}`;
+                    document.getElementById('trainingStatus').textContent = 
+                        data.training_completed ? 'Completed' : 'In Progress';
+                    
+                    // Update metrics chart
+                    if (data.metrics_history && data.metrics_history.length > 0) {
+                        updateMetricsChart(data.metrics_history);
+                        updatePerformanceStats(data.performance_metrics);
+                    }
+                    
+                    // Update IoU
+                    if (data.training_stats && data.training_stats.iou) {
+                        const latestIoU = data.training_stats.iou[data.training_stats.iou.length - 1];
+                        document.getElementById('averageIoU').textContent = 
+                            latestIoU ? latestIoU.toFixed(4) : '0';
+                    }
+                });
+        }
+
+        function updateMetricsChart(metricsHistory) {
+            const rounds = metricsHistory.map((m, i) => `Round ${i}`);
+            const iouValues = metricsHistory.map(m => 
+                m.metrics.reduce((acc, curr) => acc + curr.iou, 0) / m.metrics.length
+            );
+            const f1Values = metricsHistory.map(m => 
+                m.metrics.reduce((acc, curr) => acc + curr.f1, 0) / m.metrics.length
+            );
+
+            if (!metricsChart) {
+                const ctx = document.getElementById('metricsChart').getContext('2d');
+                metricsChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: rounds,
+                        datasets: [
+                            {
+                                label: 'IoU',
+                                data: iouValues,
+                                borderColor: 'rgb(75, 192, 192)'
+                            },
+                            {
+                                label: 'F1 Score',
+                                data: f1Values,
+                                borderColor: 'rgb(255, 99, 132)'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } else {
+                metricsChart.data.labels = rounds;
+                metricsChart.data.datasets[0].data = iouValues;
+                metricsChart.data.datasets[1].data = f1Values;
+                metricsChart.update();
+            }
+        }
+
+        function updatePerformanceStats(performanceMetrics) {
+            const statsContainer = document.getElementById('performanceStats');
+            statsContainer.innerHTML = `
+                <div class="p-4 bg-gray-50 rounded">
+                    <h4 class="font-semibold">Avg Aggregation Time</h4>
+                    <p class="text-2xl">${performanceMetrics.avg_aggregation_time.toFixed(3)}s</p>
+                </div>
+                <div class="p-4 bg-gray-50 rounded">
+                    <h4 class="font-semibold">Avg Communication Cost</h4>
+                    <p class="text-2xl">${performanceMetrics.avg_communication_cost.toFixed(2)} MB</p>
+                </div>
+                <div class="p-4 bg-gray-50 rounded">
+                    <h4 class="font-semibold">Avg Round Duration</h4>
+                    <p class="text-2xl">${(performanceMetrics.avg_round_duration / 60).toFixed(2)} min</p>
+                </div>
+            `;
+        }
+
+        // Update every 5 seconds
+        setInterval(updateDashboard, 5000);
+
+        // Initial update
+        updateDashboard();
+    </script>
+</body>
+</html>

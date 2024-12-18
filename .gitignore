@@ -1,0 +1,50 @@
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore virtual environments
+.venv/
+env/
+venv/
+
+# Ignore region folders
+data/region_1/
+data/region_2/
+data/region_3/
+
+# Ignore logs and results
+logs/
+results/
+
+# Ignore environment-specific files
+.env
+
+# Ignore compiled files
+*.so
+*.o
+*.out
+
+# Ignore generated config and temp files
+config/
+*.tmp
+*.log
+
+# Ignore IDE/editor specific files
+.vscode/
+.idea/
+*.iml
+
+# Ignore package manager files
+node_modules/
+*.lock
+pip-log.txt
+
+# Ignore general OS files
+.DS_Store
+Thumbs.db
+
+# Ignore server/client outputs
+run_server.py
+run_client.py

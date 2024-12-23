@@ -1,6 +1,9 @@
 import tensorflow as tf
 from tensorflow.keras import layers, Model
 from config.settings import MODEL_CONFIG
+from models.metrics import weighted_binary_crossentropy
+
+
 
 def conv_block(x, filters, dropout_rate=0.3):
     """
@@ -56,13 +59,13 @@ def build_unet(input_shape=(64, 64, 8)):
     
     return model
 
-def compile_model(model, learning_rate=MODEL_CONFIG['LEARNING_RATE']):
+def compile_model(model, class_weights, learning_rate=MODEL_CONFIG['LEARNING_RATE']):
     """
-    Compile model with custom loss and metrics
+    Compile model with weighted binary cross-entropy loss and metrics
     """
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-        loss=tf.keras.losses.BinaryCrossentropy(),
+        loss=weighted_binary_crossentropy(class_weights),  # Use custom loss
         metrics=[
             tf.keras.metrics.BinaryAccuracy(threshold=0.5),
             tf.keras.metrics.Precision(thresholds=0.5),

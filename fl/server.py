@@ -97,7 +97,7 @@ class FLServer:
         return client_metrics
 
     def update_global_model(self, client_update):
-        """Process client updates with enhanced tracking"""
+        
         logger.info(f"Processing update from client {client_update['client_id']} (Round {self.current_round}/{self.total_rounds})")
 
         if self.training_completed:
@@ -122,16 +122,27 @@ class FLServer:
         if len(self.client_updates) >= self.min_clients:
             agg_start_time = time.time()
             
-            # Perform FedAvg
-            weights = [update['weights'] for update in self.client_updates.values()]
-            metrics = [update['metrics'] for update in self.client_updates.values()]
+            # Get weights and data sizes for weighted averaging
+            weights_list = []
+            data_sizes = []
+            metrics = []
             
-            avg_weights = []
-            for layer_weights in zip(*weights):
-                avg_weights.append(np.mean(layer_weights, axis=0))
+            for update in self.client_updates.values():
+                weights_list.append([np.array(w) for w in update['weights']])
+                data_sizes.append(update.get('data_size', 1))  # Default to 1 if not provided
+                metrics.append(update['metrics'])
             
-            # Update global model
-            self.global_model.set_weights([np.array(w) for w in avg_weights])
+            # Perform weighted FedAvg
+            total_size = sum(data_sizes)
+            weighted_weights = [np.zeros_like(w) for w in weights_list[0]]
+            
+            for client_weights, size in zip(weights_list, data_sizes):
+                weight = size / total_size
+                for i, layer_weights in enumerate(client_weights):
+                    weighted_weights[i] += weight * layer_weights
+            
+            # Update global model with weighted average
+            self.global_model.set_weights(weighted_weights)
             
             # Track timing and metrics
             agg_time = time.time() - agg_start_time
@@ -141,13 +152,15 @@ class FLServer:
             self.training_stats['round_duration'].append(round_time)
             self.training_stats['client_participation'].append(len(self.client_updates))
             
-            # Record round metrics
+            # Record round metrics with additional information
             self.metrics_history.append({
                 'round': self.current_round,
                 'metrics': metrics,
                 'aggregation_time': agg_time,
                 'round_duration': round_time,
-                'num_clients': len(self.client_updates)
+                'num_clients': len(self.client_updates),
+                'total_data_size': total_size,
+                'client_weights': [size/total_size for size in data_sizes]  # Record contribution weights
             })
             
             # Prepare for next round
@@ -171,14 +184,16 @@ class FLServer:
                     "round": self.current_round,
                     "metrics": metrics,
                     "training_completed": True,
-                    "visualization_generated": self.visualization_generated
+                    "visualization_generated": self.visualization_generated,
+                    "final_aggregation_weights": [size/total_size for size in data_sizes]
                 }
             
             logger.info(f"Round {self.current_round} completed successfully")
             return True, {
                 "round": self.current_round,
                 "metrics": metrics,
-                "training_completed": False
+                "training_completed": False,
+                "aggregation_weights": [size/total_size for size in data_sizes]
             }
         
         return False, {

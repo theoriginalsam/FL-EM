@@ -13,6 +13,7 @@ venv/
 data/region_1/
 data/region_2/
 data/region_3/
+checkpoints/
 
 # Ignore logs and results
 logs/

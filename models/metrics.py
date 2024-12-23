@@ -68,7 +68,6 @@ class ForestChangeMetrics:
         }
 
 def weighted_binary_crossentropy(class_weights):
-    """Custom weighted loss function"""
     def loss(y_true, y_pred):
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
@@ -80,5 +79,5 @@ def weighted_binary_crossentropy(class_weights):
         bce = -(y_true * tf.math.log(y_pred) + 
                 (1 - y_true) * tf.math.log(1 - y_pred))
         
-        return tf.reduce_mean(weights * bce)
-    return loss
+        weighted_bce = weights * bce
+        return tf.reduce_mean(weighted_bce) * 100  # Scale up the loss

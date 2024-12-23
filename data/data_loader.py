@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 from glob import glob
-from config.settings import MODEL_CONFIG, MASK_PATHS
+from config.settings import MODEL_CONFIG, MASK_PATHS, REGIONS
 
 class BandLoader:
     """Class to handle loading of satellite image bands"""
@@ -27,19 +27,7 @@ class BandLoader:
             'B04': glob(f"{year_path}/**/*_B04_10m.jp2", recursive=True),
             'B08': glob(f"{year_path}/**/*_B08_10m.jp2", recursive=True)
         }
-        for band_name, paths in band_files.items():
-            print(f"Band {band_name}: {paths}")
         
-        """ if not all(band_files.values()):
-            print("Error: Some bands are missing!")
-            return images
-
-        
-        # Check if we found all bands
-        if not all(band_files.values()):
-            print("Warning: Not all band files found")
-            return images
-         """
         # Process each set of bands
         for b2, b3, b4, b8 in zip(band_files['B02'], band_files['B03'], 
                                  band_files['B04'], band_files['B08']):
@@ -53,9 +41,7 @@ class BandLoader:
                 # Process bands
                 processed_bands = []
                 for band in bands:
-                    # Convert to float32
                     band = band.astype(np.float32)
-                    # Normalize
                     band = (band - np.min(band)) / (np.max(band) - np.min(band))
                     processed_bands.append(band)
                 
@@ -76,82 +62,93 @@ class MaskLoader:
         self.img_height = img_height
         self.img_width = img_width
     
-    def load_masks(self, mask_paths):
-        """Load all masks"""
+    def load_masks(self, mask_paths, region_id):
+        """Load all masks for specific region"""
         masks = []
+        region_mask_paths = mask_paths[f'region_{region_id}']
+        print(f"\nLoading masks for region {region_id}")
         
-        for year in range(2015, 2017):
-            if year in mask_paths:
+        for year in range(2015,2024):
+            if year in region_mask_paths:
                 try:
-                    # Load mask
-                    mask = cv2.imread(mask_paths[year], cv2.IMREAD_GRAYSCALE)
+                    mask_path = region_mask_paths[year]
+                    print(f"Loading mask from: {mask_path}")
+                    
+                    mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
                     if mask is not None:
-                        # Resize and binarize
+                        print(f"Successfully loaded mask for year {year}")
                         mask = cv2.resize(mask, (self.img_width, self.img_height))
                         mask = (mask > 0).astype(np.uint8)
                         masks.append(mask)
+                        print(f"Processed mask for year {year}: shape={mask.shape}, unique values={np.unique(mask)}")
                     else:
-                        print(f"Error: Unable to load mask for year {year}")
+                        print(f"Error: Unable to load mask for year {year} from {mask_path}")
                 except Exception as e:
                     print(f"Error processing mask for year {year}: {str(e)}")
+            else:
+                print(f"No mask path found for year {year}")
         
-        return np.array(masks) if masks else None
-
+        if masks:
+            print(f"Successfully loaded {len(masks)} masks for region {region_id}")
+            return np.array(masks)
+        else:
+            print(f"Warning: No masks were loaded for region {region_id}")
+            return None
 class RegionalDataLoader:
     """Main class to load all data for a region"""
     
-    def __init__(self, region_path):
-        self.region_path = region_path
-        
+    def __init__(self, region_id):
+        """Initialize with region ID instead of path"""
+        self.region_id = region_id
+        self.region_path = REGIONS[f'region_{region_id}']
         self.band_loader = BandLoader()
         self.mask_loader = MaskLoader()
     
     def load_all_data(self):
         """Load all data for the region"""
-        # Initialize storage
         all_images = {}
         all_masks = {}
-        print(self.region_path)
-        # Get years from mask paths
-        years = sorted([year for year in range(2015, 2017) 
-                       if year in MASK_PATHS])
-        print(f"Processing years: {years}")
+        
+        # Get years from region-specific mask paths
+        region_mask_paths = MASK_PATHS[f'region_{self.region_id}']
+        years = sorted([year for year in range(2015, 2024) 
+                       if year in region_mask_paths])
+        
+        print(f"Processing years for region {self.region_id}: {years}")
         
         # Load images for each year
         for year in years:
             year_path = os.path.join(self.region_path, f"Year_{year}")
-            print(year_path)
-            #print("/Users/samir/Desktop/MTSU/Research/FL-CS6600/forest_change_fl/data/region_2")
-            if os.path.exists("/Users/samir/Desktop/MTSU/MTSU-3rd Sem/Datas/Project_Dataset/" + year_path):
-                year_path = os.path.join("/Users/samir/Desktop/MTSU/MTSU-3rd Sem/Datas/Project_Dataset", year_path)
+            if os.path.exists(year_path):
                 print(f"Loading data for year {year}...")
                 year_images = self.band_loader.load_bands(year_path)
-                #print(year_path)
                 if year_images:
                     all_images[year] = year_images
                     print(f"Loaded {len(year_images)} images for year {year}")
+            else:
+                print(f"Warning: Path not found: {year_path}")
         
-        # Load masks
-        masks = self.mask_loader.load_masks(MASK_PATHS)
+        # Load masks for this region
+        masks = self.mask_loader.load_masks(MASK_PATHS, self.region_id)
         if masks is not None:
             for idx, year in enumerate(years):
                 all_masks[year] = masks[idx]
         
         return all_images, all_masks
 
-def get_regional_data(region_path):
+def get_regional_data(region_id):
     """Utility function to load data for a region"""
-    loader = RegionalDataLoader(region_path)
+    if isinstance(region_id, str) and region_id.startswith('region_'):
+        region_id = int(region_id.split('_')[1])
+    loader = RegionalDataLoader(region_id)
     return loader.load_all_data()
 
 # Example usage:
 if __name__ == "__main__":
-    from config.settings import REGIONS
-    
-    region_path = REGIONS['region_2']
-    print(f"Loading data from {region_path}")
-    
-    all_images, all_masks = get_regional_data(region_path)
-    print("\nData loading complete!")
-    print(f"Years with images: {sorted(all_images.keys())}")
-    print(f"Years with masks: {sorted(all_masks.keys())}")
+    # Test loading for both regions
+    for region_id in [1, 2]:
+        print(f"\nLoading data for Region {region_id}")
+        all_images, all_masks = get_regional_data(region_id)
+        print(f"Region {region_id} data loading complete!")
+        print(f"Years with images: {sorted(all_images.keys())}")
+        print(f"Years with masks: {sorted(all_masks.keys())}")

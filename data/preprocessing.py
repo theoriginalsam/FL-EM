@@ -57,86 +57,106 @@ class PatchExtractor:
         return image[i_start:i_end, j_start:j_end]
 
 class BalancedPatchGenerator:
-    """Generate balanced patches for training."""
-    
-    def __init__(self, patch_size=MODEL_CONFIG['PATCH_SIZE'], 
-                 samples_per_class=1000, augment=True):
-        self.patch_extractor = PatchExtractor(patch_size)
-        self.samples_per_class = samples_per_class
-        self.augment = augment
-        self.augmenter = DataAugmentation()
-    
+    """Generate balanced patches for training with oversampling."""
+
+    def __init__(self, patch_size=64, minority_samples=1000, majority_samples=1000):
+        self.patch_size = patch_size
+        self.minority_samples = minority_samples
+        self.majority_samples = majority_samples
+
     def create_balanced_patches(self, all_images, all_masks):
-        """Create balanced patches from images and masks."""
+        """Create patches with controlled sampling for both classes."""
         patches_X = []
         patches_y = []
-        
+
         years = sorted(all_images.keys())
-        for i in range(len(years)-1):
-            year1, year2 = years[i], years[i+1]
-            
-            if year1 in all_images and year2 in all_images:
+        for i in range(len(years) - 1):
+            year1, year2 = years[i], years[i + 1]
+
+            if (
+                year1 in all_images
+                and year2 in all_images
+                and year1 in all_masks
+                and year2 in all_masks
+            ):
                 images1 = all_images[year1][0]
                 images2 = all_images[year2][0]
-                mask = all_masks[year2]
-                
-                # Get locations for each class
+                mask = all_masks[year2]  # Use second year as target
+
+                # Find locations for each class
                 forest_locs = np.where(mask > 0)
                 non_forest_locs = np.where(mask == 0)
-                
-                # Sample both classes
-                for locations, label in [(forest_locs, 1), (non_forest_locs, 0)]:
-                    self._sample_patches(
-                        images1, images2, mask, locations, 
-                        patches_X, patches_y
-                    )
-        
-        return self._finalize_patches(patches_X, patches_y)
-    
-    def _sample_patches(self, images1, images2, mask, locations, patches_X, patches_y):
-        """Sample patches for a specific class."""
-        for _ in range(self.samples_per_class):
-            idx = np.random.randint(0, len(locations[0]))
-            i_loc, j_loc = locations[0][idx], locations[1][idx]
-            
-            if self.patch_extractor.is_valid_location(i_loc, j_loc, mask.shape):
-                # Extract patches
-                patch1 = self.patch_extractor.extract_patch(images1, i_loc, j_loc)
-                patch2 = self.patch_extractor.extract_patch(images2, i_loc, j_loc)
-                mask_patch = self.patch_extractor.extract_patch(mask, i_loc, j_loc)
-                
-                # Apply augmentation if enabled
-                if self.augment:
-                    patch1 = self.augmenter.random_flip(patch1)
-                    patch2 = self.augmenter.random_flip(patch2)
-                    patch1 = self.augmenter.adjust_brightness(patch1)
-                    patch2 = self.augmenter.adjust_brightness(patch2)
-                
-                # Combine patches
-                combined_patch = np.concatenate([patch1, patch2], axis=-1)
-                patches_X.append(combined_patch)
-                patches_y.append(mask_patch)
-    
-    def _finalize_patches(self, patches_X, patches_y):
-        """Convert lists to arrays and normalize."""
+
+                half_patch = self.patch_size // 2
+
+                # Sample minority class (forest)
+                self._sample_class(
+                    images1,
+                    images2,
+                    mask,
+                    forest_locs,
+                    patches_X,
+                    patches_y,
+                    self.minority_samples,
+                    half_patch,
+                )
+
+                # Sample majority class (non-forest)
+                self._sample_class(
+                    images1,
+                    images2,
+                    mask,
+                    non_forest_locs,
+                    patches_X,
+                    patches_y,
+                    self.majority_samples,
+                    half_patch,
+                )
+
         X = np.array(patches_X)
         y = np.expand_dims(np.array(patches_y), axis=-1)
-        
+
         # Normalize features
         X = self._normalize_features(X)
-        
+
         print(f"Created patches shapes - X: {X.shape}, y: {y.shape}")
-        print(f"Class balance - Forest: {np.mean(y == 1):.3f}, "
-              f"Non-forest: {np.mean(y == 0):.3f}")
-        
+        print(f"Class balance - Forest: {np.mean(y == 1):.3f}, Non-forest: {np.mean(y == 0):.3f}")
         return X, y
-    
+
+    def _sample_class(self, images1, images2, mask, locations, patches_X, patches_y, n_samples, half_patch):
+        """Sample patches for a specific class."""
+        if len(locations[0]) > 0:
+            for _ in range(n_samples):
+                idx = np.random.randint(0, len(locations[0]))
+                i_loc, j_loc = locations[0][idx], locations[1][idx]
+
+                if all(
+                    coord >= half_patch and coord < dim - half_patch
+                    for coord, dim in zip([i_loc, j_loc], mask.shape)
+                ):
+                    patch1 = images1[
+                        i_loc - half_patch : i_loc + half_patch,
+                        j_loc - half_patch : j_loc + half_patch,
+                    ]
+                    patch2 = images2[
+                        i_loc - half_patch : i_loc + half_patch,
+                        j_loc - half_patch : j_loc + half_patch,
+                    ]
+                    mask_patch = mask[
+                        i_loc - half_patch : i_loc + half_patch,
+                        j_loc - half_patch : j_loc + half_patch,
+                    ]
+
+                    combined_patch = np.concatenate([patch1, patch2], axis=-1)
+                    patches_X.append(combined_patch)
+                    patches_y.append(mask_patch)
+
     @staticmethod
     def _normalize_features(X):
         """Normalize features independently."""
         n_features = X.shape[-1]
         X_normalized = np.zeros_like(X)
-        
+
         for i in range(n_features):
             feature = X[..., i]
             min_val = np.min(feature)
@@ -145,7 +165,7 @@ class BalancedPatchGenerator:
                 X_normalized[..., i] = (feature - min_val) / (max_val - min_val)
             else:
                 X_normalized[..., i] = feature
-        
+
         return X_normalized
 
 class DataGenerator(Sequence):

@@ -12,6 +12,7 @@ from data.preprocessing import BalancedPatchGenerator, DataGenerator
 from config.settings import MODEL_CONFIG, FL_CONFIG
 import tensorflow as tf
 from utils.visualization import FLVisualizer
+from datetime import datetime
 
 class NumpyEncoder(json.JSONEncoder):
     """Custom JSON encoder for numpy types"""
@@ -53,6 +54,9 @@ class FLClient:
         
         # Initialize model
         self._initialize_model()
+
+        if self.load_latest_checkpoint():
+            self.logger.info("Resumed from checkpoint")
         # Setup other components
         self.metrics_calculator = ForestChangeMetrics()
         self.patch_generator = BalancedPatchGenerator()
@@ -250,16 +254,65 @@ class FLClient:
             self.logger.error(f"Error saving history: {str(e)}")
             raise
     def save_checkpoint(self):
-        """Save model checkpoint"""
+        """Save comprehensive checkpoint"""
         try:
             checkpoint_dir = f'checkpoints/client_{self.region_id}/round_{self.current_round}'
             os.makedirs(checkpoint_dir, exist_ok=True)
             
-            self.model.save(os.path.join(checkpoint_dir, 'model.keras'))
+            checkpoint_data = {
+                'round': self.current_round,
+                'model_path': os.path.join(checkpoint_dir, 'model.keras'),
+                'history': self.training_history,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Save model
+            self.model.save(checkpoint_data['model_path'])
+            
+            # Save checkpoint metadata
+            with open(os.path.join(checkpoint_dir, 'checkpoint.json'), 'w') as f:
+                json.dump(checkpoint_data, f)
+                
             self.logger.info(f"Saved checkpoint for round {self.current_round}")
         except Exception as e:
             self.logger.error(f"Error saving checkpoint: {str(e)}")
 
+    def load_latest_checkpoint(self):
+        """Load most recent checkpoint"""
+        checkpoint_base = f'checkpoints/client_{self.region_id}'
+        if not os.path.exists(checkpoint_base):
+            self.logger.info("No checkpoint directory found")
+            return False
+                
+        # Find all round directories
+        round_dirs = [d for d in os.listdir(checkpoint_base) 
+                    if d.startswith('round_')]
+        if not round_dirs:
+            self.logger.info("No round directories found")
+            return False
+                
+        # Get the latest round number
+        rounds = [int(d.split('_')[-1]) for d in round_dirs]
+        if not rounds:
+            self.logger.info("No valid round numbers found")
+            return False
+                
+        latest_round = max(rounds)
+        checkpoint_dir = f'{checkpoint_base}/round_{latest_round}'
+        model_path = os.path.join(checkpoint_dir, 'model.keras')
+            
+        if not os.path.exists(model_path):
+            self.logger.info(f"No model file found at {model_path}")
+            return False
+                
+        # Load model from the latest checkpoint
+        if os.path.exists(model_path):
+            self.model = tf.keras.models.load_model(model_path)
+            self.current_round = latest_round
+            self.logger.info(f"Successfully loaded checkpoint from round {self.current_round}")
+            return True
+        
+        return False
     def get_metrics(self, X_val=None, y_val=None):
         """Calculate metrics on validation data"""
         try:
@@ -278,43 +331,58 @@ class FLClient:
             raise
 
     def update(self):
-        """Perform one round of federated learning"""
         try:
-            response = requests.get(f"{self.server_url}/get_model", timeout=30)
-            response.raise_for_status()
-            response_data = response.json()
-            
-            if response_data.get('training_completed', False):
-                self.logger.info("Training completed signal received")
+            # Get server status first
+            response = requests.get(f"{self.server_url}/status", timeout=30)
+            server_status = response.json()
+            server_round = server_status.get('current_round', 0)
+
+             # Check if training is complete
+            if server_status.get('training_completed', False) or self.current_round >= FL_CONFIG['ROUNDS']:
+                self.logger.info(f"Training completed after {self.current_round} rounds")
                 self.save_history()
                 return True, {"training_completed": True}
+
+            # Check if we need to catch up to server round
+            if server_round > self.current_round:
+                self.logger.info(f"Catching up from round {self.current_round} to {server_round}")
+                self.current_round = server_round
+                self.last_trained_round = None  # Reset to force training for new round
             
-            # Update model weights
-            self.model.set_weights([np.array(w) for w in response_data['weights']])
-            
-            # Train locally
-            history = self.train_local()
-            metrics = self.get_metrics()
-            
-            # Prepare and send update
-            update_data = {
-                'client_id': self.region_id,
-                'weights': [w.tolist() for w in self.model.get_weights()],
-                'metrics': metrics,
-                'history': history,
-                'data_size': len(self.X),
-                'round': self.current_round
-            }
-            
-            response_data = self._send_update_with_retry(update_data)
-            
-            self.current_round += 1
-            return True, response_data
-            
+            # Only train if we haven't trained for current round
+            if not hasattr(self, 'last_trained_round') or self.last_trained_round != self.current_round:
+                self.logger.info(f"Training for round {self.current_round}")
+                history = self.train_local()
+                metrics = self.get_metrics()
+                self.last_trained_round = self.current_round
+                
+                update_data = {
+                    'client_id': self.region_id,
+                    'weights': [w.tolist() for w in self.model.get_weights()],
+                    'metrics': metrics,
+                    'history': history,
+                    'data_size': len(self.X),
+                    'round': self.current_round
+                }
+                
+                response = self._send_update_with_retry(update_data)
+                
+                if response.get('result', {}).get('action') == 'proceed':
+                    self.current_round += 1
+                    self.last_trained_round = None  # Reset for next round
+                    self.logger.info(f"Proceeding to round {self.current_round}")
+                else:
+                    self.logger.info(f"Waiting for other clients in round {self.current_round}")
+                    time.sleep(30)
+            else:
+                self.logger.info(f"Checking status for round {self.current_round}")
+                time.sleep(30)
+                
+            return True, response
+                
         except Exception as e:
             self.logger.error(f"Error in update: {str(e)}")
             return False, str(e)
-
     def run(self, total_rounds=None):
         """Run FL client for specified number of rounds"""
         if total_rounds is None:

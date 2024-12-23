@@ -97,42 +97,37 @@ class FLServer:
         return client_metrics
 
     def update_global_model(self, client_update):
+        if self.current_round >= self.total_rounds:
+            return True, {
+                "action": "complete",
+                "message": "Training completed - max rounds reached",
+                "training_completed": True
+            }
+        client_id = client_update['client_id']
+        client_round = client_update.get('round', 0)
         
-        logger.info(f"Processing update from client {client_update['client_id']} (Round {self.current_round}/{self.total_rounds})")
-
-        if self.training_completed:
-            return False, {"message": "Training has already completed", "training_completed": True}
+        logger.info(f"Processing update from client {client_id} for round {client_round}")
 
         # Track client activity and timing
-        client_id = client_update['client_id']
         self.active_clients.add(client_id)
         self.client_updates[client_id] = client_update
         
-        # Calculate communication cost
-        weights_size = self.calculate_model_size(
-            [np.array(w) for w in client_update['weights']]
-        )
-        self.training_stats['communication_cost'].append(weights_size)
-
-        # Update metrics
-        if 'metrics' in client_update:
-            self._update_training_stats(client_update)
-
-        # Check if enough clients for aggregation
-        if len(self.client_updates) >= self.min_clients:
-            agg_start_time = time.time()
-            
-            # Get weights and data sizes for weighted averaging
+        # Only proceed if we have ALL clients for the CURRENT round
+        current_round_updates = {
+            cid: update for cid, update in self.client_updates.items() 
+            if update.get('round', 0) == self.current_round
+        }
+        
+        if len(current_round_updates) >= self.min_clients:
+            # Get weights for weighted averaging
             weights_list = []
             data_sizes = []
-            metrics = []
             
-            for update in self.client_updates.values():
+            for update in current_round_updates.values():
                 weights_list.append([np.array(w) for w in update['weights']])
-                data_sizes.append(update.get('data_size', 1))  # Default to 1 if not provided
-                metrics.append(update['metrics'])
+                data_sizes.append(update.get('data_size', 1))
             
-            # Perform weighted FedAvg
+            # Perform FedAvg
             total_size = sum(data_sizes)
             weighted_weights = [np.zeros_like(w) for w in weights_list[0]]
             
@@ -141,65 +136,22 @@ class FLServer:
                 for i, layer_weights in enumerate(client_weights):
                     weighted_weights[i] += weight * layer_weights
             
-            # Update global model with weighted average
+            # Update global model
             self.global_model.set_weights(weighted_weights)
-            
-            # Track timing and metrics
-            agg_time = time.time() - agg_start_time
-            round_time = time.time() - self.round_start_time
-            
-            self.aggregation_times.append(agg_time)
-            self.training_stats['round_duration'].append(round_time)
-            self.training_stats['client_participation'].append(len(self.client_updates))
-            
-            # Record round metrics with additional information
-            self.metrics_history.append({
-                'round': self.current_round,
-                'metrics': metrics,
-                'aggregation_time': agg_time,
-                'round_duration': round_time,
-                'num_clients': len(self.client_updates),
-                'total_data_size': total_size,
-                'client_weights': [size/total_size for size in data_sizes]  # Record contribution weights
-            })
-            
-            # Prepare for next round
             self.current_round += 1
-            self.round_start_time = time.time()
-            self.client_updates.clear()
+            self.client_updates.clear()  # Clear all updates after aggregation
             
-            # Check if training is complete
-            if self.current_round >= self.total_rounds:
-                logger.info("Training completed successfully!")
-                self.training_completed = True
-                try:
-                    logger.info("Generating training visualization report...")
-                    self.create_training_report()
-                    self.visualization_generated = True
-                    logger.info("Training visualization report created successfully")
-                except Exception as e:
-                    logger.error(f"Error creating visualization report: {str(e)}")
-                
-                return True, {
-                    "round": self.current_round,
-                    "metrics": metrics,
-                    "training_completed": True,
-                    "visualization_generated": self.visualization_generated,
-                    "final_aggregation_weights": [size/total_size for size in data_sizes]
-                }
-            
-            logger.info(f"Round {self.current_round} completed successfully")
+            logger.info(f"Advancing to round {self.current_round}")
             return True, {
+                "action": "proceed",
                 "round": self.current_round,
-                "metrics": metrics,
-                "training_completed": False,
-                "aggregation_weights": [size/total_size for size in data_sizes]
+                "message": "Proceeding to next round"
             }
         
         return False, {
-            "message": f"Waiting for more clients ({len(self.client_updates)}/{self.min_clients})"
+            "action": "wait",
+            "message": f"Waiting for updates (have {len(current_round_updates)}/{self.min_clients} for round {self.current_round})"
         }
-
     def _update_training_stats(self, client_update):
         """Update training statistics with client metrics"""
         metrics = client_update['metrics']

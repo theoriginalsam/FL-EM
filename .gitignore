@@ -15,6 +15,8 @@ data/region_2/
 data/region_3/
 checkpoints/
 cached_data/
+cached_data 2/
+cached_data f/
 cached_data All data/
 
 # Ignore logs and results

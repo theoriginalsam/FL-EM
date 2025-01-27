@@ -96,62 +96,110 @@ class FLServer:
                 })
         return client_metrics
 
-    def update_global_model(self, client_update):
-        if self.current_round >= self.total_rounds:
-            return True, {
-                "action": "complete",
-                "message": "Training completed - max rounds reached",
-                "training_completed": True
-            }
-        client_id = client_update['client_id']
-        client_round = client_update.get('round', 0)
-        
-        logger.info(f"Processing update from client {client_id} for round {client_round}")
 
-        # Track client activity and timing
-        self.active_clients.add(client_id)
-        self.client_updates[client_id] = client_update
-        
-        # Only proceed if we have ALL clients for the CURRENT round
-        current_round_updates = {
-            cid: update for cid, update in self.client_updates.items() 
-            if update.get('round', 0) == self.current_round
-        }
-        
-        if len(current_round_updates) >= self.min_clients:
-            # Get weights for weighted averaging
-            weights_list = []
-            data_sizes = []
+    def update_global_model(self, client_update):
+
+        try:
+            start_time = time.time()
+            if self.current_round >= self.total_rounds:
+                return True, {
+                    "action": "complete",
+                    "message": "Training completed - max rounds reached",
+                    "training_completed": True
+                }
+            client_id = client_update['client_id']
+            client_round = client_update.get('round', 0)
             
-            for update in current_round_updates.values():
-                weights_list.append([np.array(w) for w in update['weights']])
-                data_sizes.append(update.get('data_size', 1))
+            logger.info(f"Processing update from client {client_id} for round {client_round}")
+
+            # Track client activity and timing
+            self.active_clients.add(client_id)
+            self.client_updates[client_id] = client_update
             
-            # Perform FedAvg
-            total_size = sum(data_sizes)
-            weighted_weights = [np.zeros_like(w) for w in weights_list[0]]
-            
-            for client_weights, size in zip(weights_list, data_sizes):
-                weight = size / total_size
-                for i, layer_weights in enumerate(client_weights):
-                    weighted_weights[i] += weight * layer_weights
-            
-            # Update global model
-            self.global_model.set_weights(weighted_weights)
-            self.current_round += 1
-            self.client_updates.clear()  # Clear all updates after aggregation
-            
-            logger.info(f"Advancing to round {self.current_round}")
-            return True, {
-                "action": "proceed",
-                "round": self.current_round,
-                "message": "Proceeding to next round"
+            # Only proceed if we have ALL clients for the CURRENT round
+            current_round_updates = {
+                cid: update for cid, update in self.client_updates.items() 
+                if update.get('round', 0) == self.current_round
             }
-        
-        return False, {
-            "action": "wait",
-            "message": f"Waiting for updates (have {len(current_round_updates)}/{self.min_clients} for round {self.current_round})"
-        }
+            
+            if len(current_round_updates) >= self.min_clients:
+                # Get weights and metrics
+                weights_list = []
+                data_sizes = []
+                round_metrics = []
+                aggregation_start = time.time()
+                
+                for update in current_round_updates.values():
+                    weights_list.append([np.array(w) for w in update['weights']])
+                    data_sizes.append(update.get('data_size', 1))
+                    round_metrics.append(update['metrics'])
+                
+
+                # Calculate aggregated FL metrics for this round
+                aggregated_metrics = {
+                    'round': self.current_round,
+                    'aggregated_loss': np.mean([m['loss'] for m in round_metrics]),
+                    'aggregated_accuracy': np.mean([m['compile_metrics'] for m in round_metrics]),
+                    'n_clients': len(current_round_updates),
+                    'client_metrics': round_metrics
+                }
+                self.metrics_history.append(aggregated_metrics)
+                for update in current_round_updates.values():
+                    self._update_training_stats(update)  # Add this line
+                # Perform FedAvg
+                total_size = sum(data_sizes)
+                weighted_weights = [np.zeros_like(w) for w in weights_list[0]]
+                
+                for client_weights, size in zip(weights_list, data_sizes):
+                    weight = size / total_size
+                    for i, layer_weights in enumerate(client_weights):
+                        weighted_weights[i] += weight * layer_weights
+                
+
+                aggregation_time = time.time() - aggregation_start
+                round_duration = time.time() - start_time
+                
+                # Update timing stats
+                self.training_stats['round_duration'].append(round_duration)
+                self.aggregation_times.append(aggregation_time)
+                
+                # Update communication cost
+                total_update_size = sum(
+                    self.calculate_model_size([np.array(w) for w in update['weights']])
+                    for update in current_round_updates.values()
+                )
+                self.training_stats['communication_cost'].append(total_update_size)
+                
+                # Update participation
+                self.training_stats['client_participation'].append(len(current_round_updates))
+                
+                # Update training metrics from aggregated metrics
+                self.training_stats['loss'].append(aggregated_metrics['aggregated_loss'])
+                self.training_stats['accuracy'].append(aggregated_metrics['aggregated_accuracy'])
+                # Update global model
+                self.global_model.set_weights(weighted_weights)
+                self.current_round += 1
+                self.client_updates.clear()
+                
+                logger.info(f"Advancing to round {self.current_round} - Aggregated Loss: {aggregated_metrics['aggregated_loss']:.4f}")
+                return True, {
+                    "action": "proceed",
+                    "round": self.current_round,
+                    "message": "Proceeding to next round",
+                    "aggregated_metrics": aggregated_metrics
+                }
+            
+            return False, {
+                "action": "wait",
+                "message": f"Waiting for updates (have {len(current_round_updates)}/{self.min_clients} for round {self.current_round})"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in update_global_model: {str(e)}")
+            return False, {
+                "action": "error",
+                "message": str(e)
+            }
     def _update_training_stats(self, client_update):
         """Update training statistics with client metrics"""
         metrics = client_update['metrics']
@@ -236,12 +284,21 @@ def create_app():
                 })
 
             client_update = request.get_json()
-            updated, result = server.update_global_model(client_update)
+            logger.info(f"Received update with metrics: {client_update.get('metrics')}")
+
+            result = server.update_global_model(client_update)
+            if result is None:  # Handle None return
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Update failed'
+                }), 500
+
+            updated, response_data = result  # Only unpack if not None
 
             response = {
                 'status': 'success',
                 'updated': updated,
-                'result': result,
+                'result': response_data,
                 'current_round': server.current_round,
                 'total_rounds': server.total_rounds,
                 'active_clients': len(server.active_clients),
@@ -250,14 +307,13 @@ def create_app():
             }
             
             return jsonify(response)
-            
+                
         except Exception as e:
-            logger.error(f"Error in update_model: {str(e)}")
+            logger.error(f"Route error: {str(e)}")
             return jsonify({
                 'status': 'error',
                 'message': str(e)
             }), 500
-
     @app.route('/status', methods=['GET'])
     def get_status():
         return jsonify(server.get_status())

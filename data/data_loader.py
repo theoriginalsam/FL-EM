@@ -68,7 +68,7 @@ class MaskLoader:
         region_mask_paths = mask_paths[f'region_{region_id}']
         print(f"\nLoading masks for region {region_id}")
         
-        for year in range(2015,2024):
+        for year in range(2015,2017):
             if year in region_mask_paths:
                 try:
                     mask_path = region_mask_paths[year]
@@ -111,7 +111,7 @@ class RegionalDataLoader:
         
         # Get years from region-specific mask paths
         region_mask_paths = MASK_PATHS[f'region_{self.region_id}']
-        years = sorted([year for year in range(2015, 2024) 
+        years = sorted([year for year in range(2015, 2017) 
                        if year in region_mask_paths])
         
         print(f"Processing years for region {self.region_id}: {years}")

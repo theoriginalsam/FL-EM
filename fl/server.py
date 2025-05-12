@@ -82,9 +82,9 @@ class FLServer:
                 'avg_aggregation_time': np.mean(self.aggregation_times) if self.aggregation_times else 0,
                 'avg_communication_cost': np.mean(self.training_stats['communication_cost']) if self.training_stats['communication_cost'] else 0,
                 'avg_round_duration': np.mean(self.training_stats['round_duration']) if self.training_stats['round_duration'] else 0
-            }
+            },
+            'fairness_metrics': self.metrics_history[-1]['fairness_metrics'] if self.metrics_history else {}
         }
-
     def get_client_metrics(self, client_id):
         """Get metrics for a specific client"""
         client_metrics = []
@@ -98,7 +98,6 @@ class FLServer:
 
 
     def update_global_model(self, client_update):
-
         try:
             start_time = time.time()
             if self.current_round >= self.total_rounds:
@@ -109,78 +108,65 @@ class FLServer:
                 }
             client_id = client_update['client_id']
             client_round = client_update.get('round', 0)
-            
             logger.info(f"Processing update from client {client_id} for round {client_round}")
-
+            logger.info(f"Current client updates: {len(self.client_updates)} clients registered")
+            
             # Track client activity and timing
             self.active_clients.add(client_id)
             self.client_updates[client_id] = client_update
-            
-            # Only proceed if we have ALL clients for the CURRENT round
+
+            # Only proceed if we have enough clients for the current round
             current_round_updates = {
-                cid: update for cid, update in self.client_updates.items() 
+                cid: update for cid, update in self.client_updates.items()
                 if update.get('round', 0) == self.current_round
             }
-            
+            logger.info(f"Round {self.current_round}: {len(current_round_updates)} updates received, need {self.min_clients}")
+
             if len(current_round_updates) >= self.min_clients:
                 # Get weights and metrics
                 weights_list = []
                 data_sizes = []
                 round_metrics = []
                 aggregation_start = time.time()
-                
                 for update in current_round_updates.values():
                     weights_list.append([np.array(w) for w in update['weights']])
                     data_sizes.append(update.get('data_size', 1))
                     round_metrics.append(update['metrics'])
-                
 
                 # Calculate aggregated FL metrics for this round
                 aggregated_metrics = {
                     'round': self.current_round,
                     'aggregated_loss': np.mean([m['loss'] for m in round_metrics]),
-                    'aggregated_accuracy': np.mean([m['compile_metrics'] for m in round_metrics]),
+                    'aggregated_accuracy': np.mean([m.get('binary_accuracy', 0.0) for m in round_metrics]),
+                    'aggregated_iou': np.mean([m.get('iou', 0.0) for m in round_metrics]),  # New: Aggregated IOU
+                    'aggregated_dice': np.mean([2 * m.get('iou', 0.0) / (m.get('iou', 0.0) + 1) for m in round_metrics]),  # New: Aggregated Dice
                     'n_clients': len(current_round_updates),
                     'client_metrics': round_metrics
                 }
+
+                # Calculate fairness metrics
+                fairness_metrics = self.calculate_fairness_metrics(round_metrics)
+                aggregated_metrics['fairness_metrics'] = fairness_metrics
+                logger.info(f"Fairness Metrics: {fairness_metrics}")
+
+                # Append aggregated metrics to history
                 self.metrics_history.append(aggregated_metrics)
-                for update in current_round_updates.values():
-                    self._update_training_stats(update)  # Add this line
-                # Perform FedAvg
+
+                # Visualize fairness metrics
+                self.visualizer.plot_fairness_metrics([m['fairness_metrics'] for m in self.metrics_history])
+
+                # Perform FedAvg aggregation
                 total_size = sum(data_sizes)
                 weighted_weights = [np.zeros_like(w) for w in weights_list[0]]
-                
                 for client_weights, size in zip(weights_list, data_sizes):
                     weight = size / total_size
                     for i, layer_weights in enumerate(client_weights):
                         weighted_weights[i] += weight * layer_weights
-                
 
-                aggregation_time = time.time() - aggregation_start
-                round_duration = time.time() - start_time
-                
-                # Update timing stats
-                self.training_stats['round_duration'].append(round_duration)
-                self.aggregation_times.append(aggregation_time)
-                
-                # Update communication cost
-                total_update_size = sum(
-                    self.calculate_model_size([np.array(w) for w in update['weights']])
-                    for update in current_round_updates.values()
-                )
-                self.training_stats['communication_cost'].append(total_update_size)
-                
-                # Update participation
-                self.training_stats['client_participation'].append(len(current_round_updates))
-                
-                # Update training metrics from aggregated metrics
-                self.training_stats['loss'].append(aggregated_metrics['aggregated_loss'])
-                self.training_stats['accuracy'].append(aggregated_metrics['aggregated_accuracy'])
                 # Update global model
                 self.global_model.set_weights(weighted_weights)
                 self.current_round += 1
                 self.client_updates.clear()
-                
                 logger.info(f"Advancing to round {self.current_round} - Aggregated Loss: {aggregated_metrics['aggregated_loss']:.4f}")
                 return True, {
                     "action": "proceed",
@@ -188,12 +174,11 @@ class FLServer:
                     "message": "Proceeding to next round",
                     "aggregated_metrics": aggregated_metrics
                 }
-            
+            logger.info(f"Still waiting: {len(current_round_updates)}/{self.min_clients} clients for round {self.current_round}")
             return False, {
                 "action": "wait",
                 "message": f"Waiting for updates (have {len(current_round_updates)}/{self.min_clients} for round {self.current_round})"
             }
-            
         except Exception as e:
             logger.error(f"Error in update_global_model: {str(e)}")
             return False, {
@@ -217,6 +202,27 @@ class FLServer:
                 self.training_stats['accuracy'].append(
                     history.get('binary_accuracy', [0])[-1] if 'binary_accuracy' in history else 0
                 )
+
+    def calculate_fairness_metrics(self, round_metrics):
+        """
+        Calculate fairness metrics based on client updates.
+        :param round_metrics: List of metrics for all clients in the current round.
+        :return: Dictionary of fairness metrics.
+        """
+        accuracies = [m['binary_accuracy'] for m in round_metrics]
+        losses = [m['loss'] for m in round_metrics]
+        ious = [m.get('iou', 0) for m in round_metrics]  # Assuming IoU is logged
+
+        fairness_metrics = {
+            'accuracy_disparity': max(accuracies) - min(accuracies),
+            'accuracy_variance': np.var(accuracies),
+            'loss_disparity': max(losses) - min(losses),
+            'loss_variance': np.var(losses),
+            'iou_disparity': max(ious) - min(ious),
+            'iou_variance': np.var(ious),
+            'equity_score': np.mean([acc / max(accuracies) for acc in accuracies])
+        }
+        return fairness_metrics
 
     def create_training_report(self):
         """Create visualization report after training"""

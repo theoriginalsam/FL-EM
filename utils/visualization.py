@@ -1,4 +1,6 @@
-
+import matplotlib
+# Set non-GUI backend at the top of the file
+matplotlib.use('Agg')  # Must be set before importing pyplot
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
@@ -29,7 +31,9 @@ class FLVisualizer:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = f'training_metrics_{client_id}_{timestamp}.png' if client_id else f'training_metrics_{timestamp}.png'
             plt.savefig(os.path.join(self.save_dir, filename))
-        plt.show()
+            plt.close(fig)  # Close the figure to free memory
+        else:
+            plt.close(fig)  # Still close if not saving, to avoid memory leaks
 
     def plot_fl_metrics(self, metrics_history, save=True):
         """Plot federated learning metrics across rounds"""
@@ -59,7 +63,34 @@ class FLVisualizer:
         if save:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             plt.savefig(os.path.join(self.save_dir, f'fl_metrics_{timestamp}.png'))
-        plt.show()
+            plt.close(fig)
+        else:
+            plt.close(fig)
+
+    def plot_fairness_metrics(self, fairness_metrics_history, save=True):
+        """Plot fairness metrics over rounds"""
+        rounds = range(len(fairness_metrics_history))
+        metrics = ['accuracy_disparity', 'accuracy_variance', 'loss_disparity', 
+                   'loss_variance', 'iou_disparity', 'iou_variance', 'equity_score']
+
+        fig, axes = plt.subplots(3, 3, figsize=(15, 15))
+        axes = axes.flatten()
+
+        for idx, metric in enumerate(metrics):
+            values = [fm[metric] for fm in fairness_metrics_history]
+            axes[idx].plot(rounds, values, label=metric.replace("_", " ").title())
+            axes[idx].set_title(metric.replace("_", " ").title())
+            axes[idx].set_xlabel('Round')
+            axes[idx].set_ylabel(metric)
+            axes[idx].grid(True)
+
+        plt.tight_layout()
+        if save:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            plt.savefig(os.path.join(self.save_dir, f'fairness_metrics_{timestamp}.png'))
+            plt.close(fig)
+        else:
+            plt.close(fig)
 
     def plot_client_comparison(self, client_metrics, save=True):
         """Plot comparison of client performances"""
@@ -80,11 +111,13 @@ class FLVisualizer:
         if save:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             plt.savefig(os.path.join(self.save_dir, f'client_comparison_{timestamp}.png'))
-        plt.show()
+            plt.close(fig)
+        else:
+            plt.close(fig)
 
     def plot_communication_costs(self, cost_history, save=True):
         """Plot communication costs over rounds"""
-        plt.figure(figsize=(10, 5))
+        fig = plt.figure(figsize=(10, 5))
         plt.plot(range(len(cost_history)), cost_history, 'g-')
         plt.title('Communication Cost over Rounds')
         plt.xlabel('Round')
@@ -94,11 +127,13 @@ class FLVisualizer:
         if save:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             plt.savefig(os.path.join(self.save_dir, f'communication_costs_{timestamp}.png'))
-        plt.show()
+            plt.close(fig)
+        else:
+            plt.close(fig)
 
     def plot_aggregation_times(self, time_history, save=True):
         """Plot aggregation times over rounds"""
-        plt.figure(figsize=(10, 5))
+        fig = plt.figure(figsize=(10, 5))
         plt.plot(range(len(time_history)), time_history, 'r-')
         plt.title('Aggregation Time over Rounds')
         plt.xlabel('Round')
@@ -108,7 +143,9 @@ class FLVisualizer:
         if save:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             plt.savefig(os.path.join(self.save_dir, f'aggregation_times_{timestamp}.png'))
-        plt.show()
+            plt.close(fig)
+        else:
+            plt.close(fig)
 
     def plot_confusion_matrices(self, confusion_matrices, save=True):
         """Plot confusion matrices for all clients"""
@@ -127,23 +164,27 @@ class FLVisualizer:
         if save:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             plt.savefig(os.path.join(self.save_dir, f'confusion_matrices_{timestamp}.png'))
-        plt.show()
+            plt.close(fig)
+        else:
+            plt.close(fig)
 
-def create_visualization_report(fl_metrics, client_metrics, output_dir='results/reports'):
-    """Create a comprehensive visualization report"""
-    os.makedirs(output_dir, exist_ok=True)
-    visualizer = FLVisualizer(save_dir=output_dir)
-    
-    # Plot all metrics
-    visualizer.plot_fl_metrics(fl_metrics['metrics_history'])
-    visualizer.plot_client_comparison(client_metrics)
-    visualizer.plot_communication_costs(fl_metrics['communication_costs'])
-    visualizer.plot_aggregation_times(fl_metrics['aggregation_times'])
-    
-    # Save metrics to JSON
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    with open(os.path.join(output_dir, f'metrics_report_{timestamp}.json'), 'w') as f:
-        json.dump({
-            'fl_metrics': fl_metrics,
-            'client_metrics': client_metrics
-        }, f, indent=2)
+    def create_visualization_report(self, fl_metrics, client_metrics, fairness_metrics, output_dir='results/reports'):
+        """Create a comprehensive visualization report"""
+        os.makedirs(output_dir, exist_ok=True)
+        visualizer = FLVisualizer(save_dir=output_dir)
+        
+        # Plot all metrics
+        visualizer.plot_fl_metrics(fl_metrics['metrics_history'])
+        visualizer.plot_client_comparison(client_metrics)
+        visualizer.plot_communication_costs(fl_metrics['communication_costs'])
+        visualizer.plot_aggregation_times(fl_metrics['aggregation_times'])
+        visualizer.plot_fairness_metrics(fairness_metrics)
+        
+        # Save metrics to JSON
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        with open(os.path.join(output_dir, f'metrics_report_{timestamp}.json'), 'w') as f:
+            json.dump({
+                'fl_metrics': fl_metrics,
+                'client_metrics': client_metrics,
+                'fairness_metrics': fairness_metrics
+            }, f, indent=2)

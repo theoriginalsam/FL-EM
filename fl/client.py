@@ -195,23 +195,31 @@ class FLClient:
         except Exception as e:
             self.logger.error(f"Error saving checkpoint: {str(e)}")
 
+    
     def get_metrics(self):
         """Calculate metrics on validation data"""
         try:
             predictions = self.model.predict(self.val_dataset, verbose=0)
             
-            # Calculate standard metrics
-            results = {}
-            for name, value in zip(self.model.metrics_names, self.model.evaluate(self.val_dataset, verbose=0)):
-                results[name] = float(value)
-                
+            # Evaluate the model and get all metrics
+            eval_results = self.model.evaluate(self.val_dataset, verbose=0, return_dict=True)
+            
+            # Prepare results dictionary with expected keys
+            results = {
+                'loss': float(eval_results['loss']),
+                'binary_accuracy': float(eval_results.get('binary_accuracy', 0.0)),
+                'precision': float(eval_results.get('precision', 0.0)),
+                'recall': float(eval_results.get('recall', 0.0)),
+                'auc': float(eval_results.get('auc', 0.0))
+            }
+            
             # Calculate IoU
             val_y = np.concatenate([y for x, y in self.val_dataset], axis=0)
-            predictions = (predictions > 0.5).astype(np.float32)  # Threshold predictions
+            predictions = (predictions > 0.5).astype(np.float32)
             
             intersection = np.sum(predictions * val_y)
             union = np.sum(predictions) + np.sum(val_y) - intersection
-            iou = intersection / (union + 1e-7)  # Add small epsilon to avoid division by zero
+            iou = intersection / (union + 1e-7)
             
             results['iou'] = float(iou)
             
@@ -220,9 +228,6 @@ class FLClient:
         except Exception as e:
             self.logger.error(f"Error calculating metrics: {str(e)}")
             raise
-    # Add this function to your client.py file
-    
-
     def update(self):
         try:
             while True:  # Keep checking until successful update
